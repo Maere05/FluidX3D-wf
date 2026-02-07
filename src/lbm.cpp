@@ -130,6 +130,10 @@ void LBM_Domain::allocate(Device& device) {
 	flags = Memory<uchar>(device, N);
 	kernel_initialize = Kernel(device, N, "initialize", fi, rho, u, flags);
 	kernel_stream_collide = Kernel(device, N, "stream_collide", fi, rho, u, flags, t, fx, fy, fz);
+#ifdef WALL_FUNCTION
+	kernel_stream_collide.add_parameters(wall_distance, wall_normal);
+#endif // WALL_FUNCTION
+
 	kernel_update_fields = Kernel(device, N, "update_fields", fi, rho, u, flags, t, fx, fy, fz);
 
 #ifdef FORCE_FIELD
@@ -171,7 +175,6 @@ void LBM_Domain::allocate(Device& device) {
 #ifdef WALL_FUNCTION
 	wall_distance = Memory<float>(device, N);
 	wall_normal = Memory<float>(device, N, 3u);
-	kernel_stream_collide.add_parameters(wall_distance, wall_normal);
 	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags);
 	kernel_wall_normal = Kernel(device, N, "wall_normal", wall_distance, flags, wall_normal);
 #endif // WALL_FUNCTION

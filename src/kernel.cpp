@@ -1584,7 +1584,8 @@ string opencl_c_container() { return R( // ########################## begin of O
 	
 	// Calculate slip velocity
 	// u_slip = u_tan - (u_tau^2 / nu) * y
-	const float nu = def_nu; // Global laminar viscosity
+	// const float nu = def_nu; // Global laminar viscosity
+    const float nu = (1.0f/def_w - 0.5f)/3.0f; // Calculate nu locally
 	const float slip_factor = 1.0f - (sq(u_tau) * y) / (u_tan_mag * nu);
 	
 	const float3 u_slip = u_tan_vec * slip_factor;
@@ -1611,29 +1612,21 @@ string opencl_c_container() { return R( // ########################## begin of O
 
 
 )+R(kernel void stream_collide)+"("+R(global fpxx* fi, global float* rho, global float* u, global uchar* flags, const ulong t, const float fx, const float fy, const float fz 
-)+"#ifdef WALL_FUNCTION"+R(
+)
++"\n#ifdef WALL_FUNCTION\n"+R(
 	, const global float* wall_distance, const global float* wall_normal
 )
-+"#endif"+R()
-+"#ifdef FORCE_FIELD"+R(
++"\n#endif\n#ifdef FORCE_FIELD\n"+R(
 	, const global float* F // argument order is important
 )
-+"#endif"+R( // FORCE_FIELD
-)
-+"#ifdef SURFACE"+R(
++"\n#endif\n#ifdef SURFACE\n"+R(
 	, const global float* mass // argument order is important
 )
-+"#endif"+R( // SURFACE
-)
-+"#ifdef TEMPERATURE"+R(
++"\n#endif\n#ifdef TEMPERATURE\n"+R(
 	, global fpxx* gi, global float* T // argument order is important
 )
-+"#endif"+R( // TEMPERATURE
-)
-+"#ifdef WALL_FUNCTION"+R(
-	, const global float* wall_distance, const global float* wall_normal
-)
-+"#endif"+R(
+
++"\n#endif\n"+R(
 )
 +") {"+R( // stream_collide()
 	const uxx n = get_global_id(0); // n = x+(y+z*Ny)*Nx
@@ -1808,152 +1801,10 @@ string opencl_c_container() { return R( // ########################## begin of O
 +"#endif"+R( // SUBGRID || TURBULENCE_MODEL_WALE
 
 )
+
+
+
 +"#if defined(SRT)"+R(
-
-
-)+"#ifdef FORCE_FIELD"+R(
-	, const global float* F // argument order is important
-)+"#endif"+R( // FORCE_FIELD
-)+"#ifdef SURFACE"+R(
-	, const global float* mass // argument order is important
-)+"#endif"+R( // SURFACE
-)+"#ifdef TEMPERATURE"+R(
-	, global fpxx* gi, global float* T // argument order is important
-)+"#endif"+R( // TEMPERATURE
-)+") {"+R( // stream_collide()
-	const uxx n = get_global_id(0); // n = x+(y+z*Ny)*Nx
-	if(n>=(uxx)def_N||is_halo(n)) return; // don't execute stream_collide() on halo
-	const uchar flagsn = flags[n]; // cache flags[n] for multiple readings
-	const uchar flagsn_bo=flagsn&TYPE_BO, flagsn_su=flagsn&TYPE_SU; // extract boundary and surface flags
-	if(flagsn_bo==TYPE_S||flagsn_su==TYPE_G) return; // if cell is solid boundary or gas, just return
-
-	uxx j[def_velocity_set]; // neighbor indices
-	neighbors(n, j); // calculate neighbor indices
-
-	float fhn[def_velocity_set]; // local DDFs
-	load_f(n, fhn, fi, j, t); // perform streaming (part 2)
-
-)+"#ifdef MOVING_BOUNDARIES"+R(
-	if(flagsn_bo==TYPE_MS) apply_moving_boundaries(fhn, j, u, flags); // apply Dirichlet velocity boundaries if necessary (reads velocities of only neighboring boundary cells, which do not change during simulation)
-)+"#endif"+R( // MOVING_BOUNDARIES
-
-	float rhon, uxn, uyn, uzn; // calculate local density and velocity for collision
-)+"#ifndef EQUILIBRIUM_BOUNDARIES"+R(
-	calculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn); // calculate density and velocity fields from fi
-)+"#else"+R( // EQUILIBRIUM_BOUNDARIES
-	if(flagsn_bo==TYPE_E) {
-		rhon = rho[               n]; // apply preset velocity/density
-		uxn  = u[                 n];
-		uyn  = u[    def_N+(ulong)n];
-		uzn  = u[2ul*def_N+(ulong)n];
-	} else {
-		calculate_rho_u(fhn, &rhon, &uxn, &uyn, &uzn); // calculate density and velocity fields from fi
-	}
-)+"#endif"+R( // EQUILIBRIUM_BOUNDARIES
-	float fxn=fx, fyn=fy, fzn=fz; // force starts as constant volume force, can be modified before call of calculate_forcing_terms(...)
-	float Fin[def_velocity_set]; // forcing terms
-
-)+"#ifdef FORCE_FIELD"+R(
-	{ // separate block to avoid variable name conflicts
-		fxn += F[                 n]; // apply force field
-		fyn += F[    def_N+(ulong)n];
-		fzn += F[2ul*def_N+(ulong)n];
-	}
-)+"#endif"+R( // FORCE_FIELD
-
-)+"#ifdef SURFACE"+R(
-	if(flagsn_su==TYPE_I) { // cell was interface, eventually initiate flag change
-		bool TYPE_NO_F=true, TYPE_NO_G=true; // temporary flags for no fluid or gas neighbors
-		for(uint i=1u; i<def_velocity_set; i++) {
-			const uchar flagsji_su = flags[j[i]]&TYPE_SU; // extract SURFACE flags
-			TYPE_NO_F = TYPE_NO_F&&flagsji_su!=TYPE_F;
-			TYPE_NO_G = TYPE_NO_G&&flagsji_su!=TYPE_G;
-		}
-		const float massn = mass[n]; // load mass
-		     if(massn>rhon || TYPE_NO_G) flags[n] = (flagsn&~TYPE_SU)|TYPE_IF; // set flag interface->fluid
-		else if(massn<0.0f || TYPE_NO_F) flags[n] = (flagsn&~TYPE_SU)|TYPE_IG; // set flag interface->gas
-	}
-)+"#endif"+R( // SURFACE
-
-)+"#ifdef TEMPERATURE"+R(
-	{ // separate block to avoid variable name conflicts
-		uxx j7[7]; // neighbors of D3Q7 subset
-		neighbors_temperature(n, j7);
-		float ghn[7]; // read from gA and stream to gh (D3Q7 subset, periodic boundary conditions)
-		load_g(n, ghn, gi, j7, t); // perform streaming (part 2)
-		float Tn;
-		if(flagsn&TYPE_T) {
-			Tn = T[n]; // apply preset temperature
-		} else {
-			Tn = 0.0f;
-			for(uint i=0u; i<7u; i++) Tn += ghn[i]; // calculate temperature from g
-			Tn += 1.0f; // add 1.0f last to avoid digit extinction effects when summing up gi (perturbation method / DDF-shifting)
-		}
-		float geq[7]; // cache f_equilibrium[n]
-		calculate_g_eq(Tn, uxn, uyn, uzn, geq); // calculate equilibrium DDFs
-		if(flagsn&TYPE_T) {
-			for(uint i=0u; i<7u; i++) ghn[i] = geq[i]; // just write geq to ghn (no collision)
-		} else {
-)+"#ifdef UPDATE_FIELDS"+R(
-			T[n] = Tn; // update temperature field
-)+"#endif"+R( // UPDATE_FIELDS
-			for(uint i=0u; i<7u; i++) ghn[i] = fma(1.0f-def_w_T, ghn[i], def_w_T*geq[i]); // perform collision
-		}
-		store_g(n, ghn, gi, j7, t); // perform streaming (part 1)
-		fxn -= fx*def_beta*(Tn-def_T_avg);
-		fyn -= fy*def_beta*(Tn-def_T_avg);
-		fzn -= fz*def_beta*(Tn-def_T_avg);
-	}
-)+"#endif"+R( // TEMPERATURE
-
-	{ // separate block to avoid variable name conflicts
-)+"#ifdef VOLUME_FORCE"+R( // apply force and collision operator, write to fi in video memory
-		const float rho2 = 0.5f/rhon; // apply external volume force (Guo forcing, Krueger p.233f)
-		uxn = clamp(fma(fxn, rho2, uxn), -def_c, def_c); // limit velocity (for stability purposes)
-		uyn = clamp(fma(fyn, rho2, uyn), -def_c, def_c); // force term: F*dt/(2*rho)
-		uzn = clamp(fma(fzn, rho2, uzn), -def_c, def_c);
-		calculate_forcing_terms(uxn, uyn, uzn, fxn, fyn, fzn, Fin); // calculate volume force terms Fin from velocity field (Guo forcing, Krueger p.233f)
-)+"#else"+R( // VOLUME_FORCE
-		uxn = clamp(uxn, -def_c, def_c); // limit velocity (for stability purposes)
-		uyn = clamp(uyn, -def_c, def_c); // force term: F*dt/(2*rho)
-		uzn = clamp(uzn, -def_c, def_c);
-		for(uint i=0u; i<def_velocity_set; i++) Fin[i] = 0.0f;
-)+"#endif"+R( // VOLUME_FORCE
-	}
-
-)+"#ifdef UPDATE_FIELDS"+R(
-)+"#ifdef EQUILIBRIUM_BOUNDARIES"+R(
-	if(flagsn_bo!=TYPE_E) // only update fields for non-TYPE_E cells
-)+"#endif"+R( // EQUILIBRIUM_BOUNDARIES
-	{
-		rho[               n] = rhon; // update density field
-		u[                 n] = uxn; // update velocity field
-		u[    def_N+(ulong)n] = uyn;
-		u[2ul*def_N+(ulong)n] = uzn;
-	}
-)+"#endif"+R( // UPDATE_FIELDS
-
-	float feq[def_velocity_set]; // equilibrium DDFs
-	calculate_f_eq(rhon, uxn, uyn, uzn, feq); // calculate equilibrium DDFs
-	float w = def_w; // LBM relaxation rate w = dt/tau = dt/(nu/c^2+dt/2) = 1/(3*nu+1/2)
-
-)+"#ifdef SUBGRID"+R(
-	{ // Smagorinsky-Lilly subgrid turbulence model, source: https://arxiv.org/pdf/comp-gas/9401004.pdf, in the eq. below (26), it is "tau_0" not "nu_0", and "sqrt(2)/rho" (they call "rho" "n") is missing
-		const float tau0 = 1.0f/w; // source 2: https://youtu.be/V8ydRrdCzl0
-		float Hxx=0.0f, Hyy=0.0f, Hzz=0.0f, Hxy=0.0f, Hxz=0.0f, Hyz=0.0f; // non-equilibrium stress tensor
-		for(uint i=1u; i<def_velocity_set; i++) {
-			const float fneqi = fhn[i]-feq[i];
-			const float cxi=c(i), cyi=c(def_velocity_set+i), czi=c(2u*def_velocity_set+i);
-			Hxx += cxi*cxi*fneqi; //Hyx += cyi*cxi*fneqi; Hzx += czi*cxi*fneqi; // symmetric tensor
-			Hxy += cxi*cyi*fneqi; Hyy += cyi*cyi*fneqi; //Hzy += czi*cyi*fneqi;
-			Hxz += cxi*czi*fneqi; Hyz += cyi*czi*fneqi; Hzz += czi*czi*fneqi;
-		}
-		const float Q = sq(Hxx)+sq(Hyy)+sq(Hzz)+2.0f*(sq(Hxy)+sq(Hxz)+sq(Hyz)); // Q = H*H, turbulent eddy viscosity nut = (C*Delta)^2*|S|, intensity of local strain rate tensor |S|=sqrt(2*S*S)
-		w = 2.0f/(tau0+sqrt(sq(tau0)+0.76421222f*sqrt(Q)/rhon)); // 0.76421222 = 18*sqrt(2)*(C*Delta)^2, C = 1/pi*(2/(3*CK))^(3/4) = Smagorinsky-Lilly constant, CK = 3/2 = Kolmogorov constant, Delta = 1 = lattice constant
-	} // modity LBM relaxation rate by increasing effective viscosity in regions of high strain rate (add turbulent eddy viscosity), nu_eff = nu_0+nu_t
-)+"#endif"+R( // SUBGRID
-
-)+"#if defined(SRT)"+R(
 )+"#ifdef VOLUME_FORCE"+R(
 	const float c_tau = fma(w, -0.5f, 1.0f);
 	for(uint i=0u; i<def_velocity_set; i++) Fin[i] *= c_tau;
