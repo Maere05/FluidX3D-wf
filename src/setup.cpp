@@ -1364,3 +1364,109 @@ void main_setup() { // benchmark; required extensions in defines.hpp: BENCHMARK,
 	lbm.run();
 	//lbm.run(1000u); lbm.u.read_from_device(); println(lbm.u.x[lbm.index(Nx/2u, Ny/2u, Nz/2u)]); wait(); // test for binary identity
 } /**/
+
+
+
+// #############################################################################################################
+// ####################################  VALIDATION SCENARIOS  ###################################
+// #############################################################################################################
+
+void setup_ahmed_body() { // Ahmed body validation
+	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
+	const uint memory = 4000u; // available VRAM of GPU(s) in MB
+	const float lbm_u = 0.05f;
+	const float box_scale = 6.0f;
+	const float si_u = 60.0f;
+	const float si_nu=1.48E-5f, si_rho=1.225f;
+	const float si_width=0.389f, si_height=0.288f, si_length=1.044f;
+	const float si_A = si_width*si_height+2.0f*0.05f*0.03f;
+	const float si_T = 1.0f; // Run for 1 second physical time
+	const float si_Lx = units.x(box_scale*si_width);
+	const float si_Ly = units.x(box_scale*si_length);
+	const float si_Lz = units.x(0.5f*(box_scale-1.0f)*si_width+si_height);
+	const uint3 lbm_N = resolution(float3(si_Lx, si_Ly, si_Lz), memory); // input: simulation box aspect ratio and VRAM occupation in MB, output: grid resolution
+	units.set_m_kg_s((float)lbm_N.y, lbm_u, 1.0f, box_scale*si_length, si_u, si_rho);
+	const float lbm_nu = units.nu(si_nu);
+	const ulong lbm_T = units.t(si_T);
+	const float lbm_length = units.x(si_length);
+	print_info("Re = "+to_string(to_uint(units.si_Re(si_width, si_u, si_nu))));
+	LBM lbm(lbm_N, lbm_nu);
+	// ###################################################################################### define geometry ######################################################################################
+    // Try to read STL.
+    string stl_path = get_exe_path()+"../stl/ahmed_25deg_m.stl";
+	Mesh* mesh = read_stl(stl_path, lbm.size(), lbm.center(), float3x3(float3(0, 0, 1), radians(90.0f)), lbm_length);
+	mesh->translate(float3(0.0f, units.x(0.5f*(0.5f*box_scale*si_length-si_width))-mesh->pmin.y, 1.0f-mesh->pmin.z));
+	lbm.voxelize_mesh_on_device(mesh, TYPE_S|TYPE_X); 
+    
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		if(z==0u) lbm.flags[n] = TYPE_S; // Floor
+		if(lbm.flags[n]!=TYPE_S) lbm.u.y[n] = lbm_u; // Initial velocity
+		if(x==0u||x==Nx-1u||y==0u||y==Ny-1u||z==Nz-1u) lbm.flags[n] = TYPE_E; // Domain BCs
+	}); // ####################################################################### run simulation ##########################################################################
+	lbm.graphics.visualization_modes = VIS_FLAG_SURFACE|VIS_FIELD;
+	lbm.graphics.field_mode = 1; // rho/pressure
+	lbm.graphics.slice_mode = 1;
+	lbm.run(0u, lbm_T); // initialize simulation
+
+	const float3 lbm_com = lbm.object_center_of_mass(TYPE_S|TYPE_X);
+	print_info("com = "+to_string(lbm_com.x, 2u)+", "+to_string(lbm_com.y, 2u)+", "+to_string(lbm_com.z, 2u));
+	while(lbm.get_t()<=lbm_T) { // main simulation loop
+		Clock clock;
+		const float3 lbm_force = lbm.object_force(TYPE_S|TYPE_X);
+		const float Cd = units.si_F(lbm_force.y)/(0.5f*si_rho*sq(si_u)*si_A); 
+		print_info("Cd = "+to_string(Cd, 3u)+", t = "+to_string(clock.stop(), 3u));
+		lbm.run(100u, lbm_T);
+	}
+}
+
+void setup_cylinder() { // Cylinder validation
+	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
+	const float Re = 25000.0f;
+	const float D = 64.0f; // Diameter in lattice units
+	const float u = 0.05f; // reduced velocity
+	const float w=10.0f*D, l=20.0f*D, h=2.0f*D; // Domain size
+	const float nu = units.nu_from_Re(Re, D, u);
+	LBM lbm(to_uint(w), to_uint(l), to_uint(h), nu);
+	// ###################################################################################### define geometry ######################################################################################
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		lbm.u.y[n] = u; // Flow in Y direction
+		if(cylinder(x, y, z, float3(lbm.center().x, 4.0f*D, lbm.center().z), float3(Nx, 0u, 0u), 0.5f*D)) lbm.flags[n] = TYPE_S;
+		if(x==0u||x==Nx-1u||z==0u||z==Nz-1u) lbm.flags[n] = TYPE_S; // Side walls
+        if(y==0u||y==Ny-1u) lbm.flags[n] = TYPE_E; // Inflow/Outflow
+	}); 
+	lbm.graphics.visualization_modes = VIS_FLAG_LATTICE|VIS_Q_CRITERION;
+	lbm.run();
+}
+
+void setup_ski_jumper() { // Ski Jumper validation (Placeholder geometry)
+    print_info("Running Ski Jumper Validation Case...");
+	const uint memory = 4000u; 
+	const float lbm_u = 0.05f;
+	const float box_scale = 1.0f; 
+    const uint3 lbm_N = resolution(float3(1.0f, 2.0f, 1.0f), memory);
+	LBM lbm(lbm_N, 0.0001f); // Low viscosity / High Re
+
+	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); 
+    parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
+		if(lbm.flags[n]!=TYPE_S) lbm.u.y[n] = lbm_u;
+		if(x==0u||x==Nx-1u||y==0u||y==Ny-1u||z==Nz-1u) lbm.flags[n] = TYPE_E;
+        if(z==0u) lbm.flags[n] = TYPE_S; // Ground
+        
+        // Simple Ski Jumper Proxy: Sphere
+        float3 c = lbm.center();
+        c.y = 0.3f*Ny;
+        if(sphere(x,y,z, c, (float)Nx/10.0f)) lbm.flags[n] = TYPE_S;
+	}); 
+    
+	lbm.graphics.visualization_modes = VIS_FLAG_SURFACE|VIS_Q_CRITERION;
+	lbm.run();
+}
+
+#ifndef BENCHMARK
+void main_setup() { 
+    // Select validation case
+    setup_ahmed_body();
+    // setup_cylinder();
+    // setup_ski_jumper(); // Placeholder geometry if STL missing
+}
+#endif

@@ -46,6 +46,10 @@ uint bytes_per_cell_device() { // returns the number of Bytes per cell allocated
 #ifdef TEMPERATURE
 	bytes_per_cell += 7u*sizeof(fpxx)+4u; // gi, T
 #endif // TEMPERATURE
+#ifdef WALL_FUNCTION
+	bytes_per_cell += 4u+3u*4u; // wall_distance, wall_normal
+#endif // WALL_FUNCTION
+
 	return bytes_per_cell;
 }
 uint bandwidth_bytes_per_cell_device() { // returns the bandwidth in Bytes per cell per time step from/to device memory
@@ -164,6 +168,15 @@ void LBM_Domain::allocate(Device& device) {
 	kernel_update_fields.add_parameters(gi, T);
 #endif // TEMPERATURE
 
+#ifdef WALL_FUNCTION
+	wall_distance = Memory<float>(device, N);
+	wall_normal = Memory<float>(device, N, 3u);
+	kernel_stream_collide.add_parameters(wall_distance, wall_normal);
+	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags);
+	kernel_wall_normal = Kernel(device, N, "wall_normal", wall_distance, flags, wall_normal);
+#endif // WALL_FUNCTION
+
+
 #ifdef PARTICLES
 	particles = Memory<float>(device, (ulong)particles_N, 3u);
 	kernel_integrate_particles = Kernel(device, (ulong)particles_N, "integrate_particles", particles, u, flags, 1.0f);
@@ -251,6 +264,18 @@ void LBM_Domain::enqueue_integrate_particles(const uint time_step_multiplicator)
 	kernel_integrate_particles.set_parameters(3u, (float)time_step_multiplicator).enqueue_run();
 }
 #endif // PARTICLES
+
+#ifdef WALL_FUNCTION
+void LBM_Domain::calculate_wall_geometry() {
+	const uint JFA_iter = (uint)ceil(log2((float)max(max(Nx, Ny), Nz)));
+	kernel_jump_flooding.set_parameters(2u, (uint)0).enqueue_run(); // initialize local distance
+	for(uint k=0u; k<JFA_iter; k++) {
+		const uint s = 1u<<(JFA_iter-1u-k);
+		kernel_jump_flooding.set_parameters(2u, s).enqueue_run();
+	}
+	kernel_wall_normal.enqueue_run();
+}
+#endif // WALL_FUNCTION
 
 void LBM_Domain::increment_time_step(const uint steps) {
 	t += (ulong)steps; // increment time step
@@ -733,6 +758,15 @@ LBM::LBM(const uint Nx, const uint Ny, const uint Nz, const uint Dx, const uint 
 #ifdef PARTICLES
 		particles = &(lbm_domain[0]->particles);
 #endif // PARTICLES
+	} {
+#ifdef WALL_FUNCTION
+		Memory<float>** buffers_wall_distance = new Memory<float>*[D];
+		for(uint d=0u; d<D; d++) buffers_wall_distance[d] = &(lbm_domain[d]->wall_distance);
+		wall_distance = Memory_Container(this, buffers_wall_distance, "wall_distance");
+		Memory<float>** buffers_wall_normal = new Memory<float>*[D];
+		for(uint d=0u; d<D; d++) buffers_wall_normal[d] = &(lbm_domain[d]->wall_normal);
+		wall_normal = Memory_Container(this, buffers_wall_normal, "wall_normal");
+#endif // WALL_FUNCTION
 	}
 #ifdef GRAPHICS
 	graphics = Graphics(this);
@@ -885,6 +919,10 @@ void LBM::initialize() { // write all data fields to device and call kernel_init
 #endif // TEMPERATURE
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->finish_queue();
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->reset_time_step(); // set time step to 0 again
+#ifdef WALL_FUNCTION
+	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->calculate_wall_geometry();
+	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->finish_queue();
+#endif // WALL_FUNCTION
 	initialized = true;
 }
 

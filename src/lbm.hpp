@@ -62,6 +62,11 @@ private:
 #ifdef PARTICLES
 	Kernel kernel_integrate_particles; // intgegrates particles forward in time and couples particles to fluid
 #endif // PARTICLES
+#ifdef WALL_FUNCTION
+	Kernel kernel_jump_flooding; // JFA step for wall distance
+	Kernel kernel_wall_normal; // Sobel operator for wall normal
+#endif // WALL_FUNCTION
+
 
 	void allocate(Device& device); // allocate all memory for data fields on host and device and set up kernels
 	string device_defines() const; // returns preprocessor constants for embedding in OpenCL C code
@@ -83,6 +88,11 @@ public:
 #ifdef PARTICLES
 	Memory<float> particles; // particle positions
 #endif // PARTICLES
+#ifdef WALL_FUNCTION
+	Memory<float> wall_distance; // distance to nearest wall
+	Memory<float> wall_normal; // surface normal vector
+#endif // WALL_FUNCTION
+
 
 	Memory<char> transfer_buffer_p, transfer_buffer_m; // transfer buffers for multi-device domain communication, only allocate one set of transfer buffers in plus/minus directions, for all x/y/z transfers
 	Kernel kernel_transfer[enum_transfer_field::enum_transfer_field_length][2]; // for each field one extract and one insert kernel
@@ -114,6 +124,10 @@ public:
 #ifdef PARTICLES
 	void enqueue_integrate_particles(const uint time_step_multiplicator=1u); // intgegrates particles forward in time and couples particles to fluid
 #endif // PARTICLES
+#ifdef WALL_FUNCTION
+	void calculate_wall_geometry(); // compute wall distance and normal
+#endif // WALL_FUNCTION
+
 
 	void increment_time_step(const uint steps=1u); // increment time step
 	void reset_time_step(); // reset time step
@@ -424,6 +438,11 @@ public:
 #ifdef PARTICLES
 	Memory<float>* particles; // particle positions
 #endif // PARTICLES
+#ifdef WALL_FUNCTION
+	Memory_Container<float> wall_distance; // distance to nearest wall
+	Memory_Container<float> wall_normal; // surface normal vector
+#endif // WALL_FUNCTION
+
 
 	LBM(const uint Nx, const uint Ny, const uint Nz, const uint Dx, const uint Dy, const uint Dz, const float nu, const float fx=0.0f, const float fy=0.0f, const float fz=0.0f, const float sigma=0.0f, const float alpha=0.0f, const float beta=0.0f, const uint particles_N=0u, const float particles_rho=0.0f); // compiles OpenCL C code and allocates memory
 	LBM(const uint Nx, const uint Ny, const uint Nz, const float nu, const float fx=0.0f, const float fy=0.0f, const float fz=0.0f, const float sigma=0.0f, const float alpha=0.0f, const float beta=0.0f, const uint particles_N=0u, const float particles_rho=1.0f); // compiles OpenCL C code and allocates memory

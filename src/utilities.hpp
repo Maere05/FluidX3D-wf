@@ -4051,7 +4051,7 @@ inline void print_message(const string& message, const string& keyword="", const
 		l += wordlength+1u; // word + space
 		if(l<=w+1u) { // word fits -> append word and space
 			p += word+" ";
-		} else if(wordlength>w) { // word overflows -> split word into next line
+		} else if(wordlength>w && l-wordlength-1u<=w) { // word overflows -> split word into next line
 			p += substring(word, 0, w-(l-wordlength-1u))+" |\n| "+f;
 			v[i] = substring(v[i], w-(l-wordlength-1u)); i--; // reuse same vector element for overflowing part, decrement i to start next line with this overflowing part
 			l = 0u; // reset line length
