@@ -131,7 +131,7 @@ void LBM_Domain::allocate(Device& device) {
 #ifdef WALL_FUNCTION
 	wall_distance = Memory<float>(device, N);
 	wall_normal = Memory<float>(device, N, 3u);
-	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags);
+	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags, (uint)0u);
 	kernel_wall_normal = Kernel(device, N, "wall_normal", wall_distance, flags, wall_normal);
 #endif // WALL_FUNCTION
 
@@ -273,7 +273,7 @@ void LBM_Domain::enqueue_integrate_particles(const uint time_step_multiplicator)
 #ifdef WALL_FUNCTION
 void LBM_Domain::calculate_wall_geometry() {
 	const uint JFA_iter = (uint)ceil(log2((float)max(max(Nx, Ny), Nz)));
-	kernel_jump_flooding.set_parameters(2u, (uint)0).enqueue_run(); // initialize local distance
+	kernel_jump_flooding.set_parameters(2u, (uint)0u).enqueue_run(); // initialize local distance
 	for(uint k=0u; k<JFA_iter; k++) {
 		const uint s = 1u<<(JFA_iter-1u-k);
 		kernel_jump_flooding.set_parameters(2u, s).enqueue_run();

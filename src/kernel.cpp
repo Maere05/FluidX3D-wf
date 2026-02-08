@@ -1516,7 +1516,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 
 
 )+R(void calculate_viscosity_WALE(const uxx n, const global float* u, const float rho, float* nu_t) { // WALE turbulence model
-	const float Cw = 0.325f; // WALE constant (0.5-0.6 in literature, but 0.325 matches Smagorinsky ~0.1)
+	const float Cw = 0.325f; // WALE constant
 	const float Delta = 1.0f; // filter width (lattice unit)
 	
 	uxx x0, xp, xm, y0, yp, ym, z0, zp, zm;
@@ -1526,42 +1526,79 @@ string opencl_c_container() { return R( // ########################## begin of O
 	const float3 u_yp = load3(yp, u), u_ym = load3(ym, u);
 	const float3 u_zp = load3(zp, u), u_zm = load3(zm, u);
 	
-	const float g11 = 0.5f*(u_xp.x-u_xm.x), g12 = 0.5f*(u_xp.y-u_xm.y), g13 = 0.5f*(u_xp.z-u_xm.z);
-	const float g21 = 0.5f*(u_yp.x-u_ym.x), g22 = 0.5f*(u_yp.y-u_ym.y), g23 = 0.5f*(u_yp.z-u_ym.z);
-	const float g31 = 0.5f*(u_zp.x-u_zm.x), g32 = 0.5f*(u_zp.y-u_zm.y), g33 = 0.5f*(u_zp.z-u_zm.z);
+	// Velocity gradient tensor g_ij = du_i/dx_j (row i = velocity component, col j = derivative direction)
+	const float g11 = 0.5f*(u_xp.x-u_xm.x), g12 = 0.5f*(u_yp.x-u_ym.x), g13 = 0.5f*(u_zp.x-u_zm.x);
+	const float g21 = 0.5f*(u_xp.y-u_xm.y), g22 = 0.5f*(u_yp.y-u_ym.y), g23 = 0.5f*(u_zp.y-u_zm.y);
+	const float g31 = 0.5f*(u_xp.z-u_xm.z), g32 = 0.5f*(u_yp.z-u_ym.z), g33 = 0.5f*(u_zp.z-u_zm.z);
 	
-	const float sq_g11=sq(g11), sq_g12=sq(g12), sq_g13=sq(g13);
-	const float sq_g21=sq(g21), sq_g22=sq(g22), sq_g23=sq(g23);
-	const float sq_g31=sq(g31), sq_g32=sq(g32), sq_g33=sq(g33);
+	// Strain rate tensor S_ij = 0.5*(g_ij + g_ji)
+	const float S11 = g11, S22 = g22, S33 = g33;
+	const float S12 = 0.5f*(g12+g21), S13 = 0.5f*(g13+g31), S23 = 0.5f*(g23+g32);
 	
-	const float S2 = sq(g11)+sq(g22)+sq(g33)+2.0f*(sq(0.5f*(g12+g21))+sq(0.5f*(g13+g31))+sq(0.5f*(g23+g32)));
+	// S_ij*S_ij contraction
+	const float S2 = S11*S11 + S22*S22 + S33*S33 + 2.0f*(S12*S12 + S13*S13 + S23*S23);
 	
-	const float Sd2 = sq(sq_g11)+sq(sq_g22)+sq(sq_g33) + 2.0f*(sq(0.5f*(sq_g12+sq_g21))+sq(0.5f*(sq_g13+sq_g31))+sq(0.5f*(sq_g23+sq_g32))); // simplified Sd calculation
+	// Compute g^2 = g*g (matrix multiplication)
+	const float g2_11 = g11*g11 + g12*g21 + g13*g31;
+	const float g2_12 = g11*g12 + g12*g22 + g13*g32;
+	const float g2_13 = g11*g13 + g12*g23 + g13*g33;
+	const float g2_21 = g21*g11 + g22*g21 + g23*g31;
+	const float g2_22 = g21*g12 + g22*g22 + g23*g32;
+	const float g2_23 = g21*g13 + g22*g23 + g23*g33;
+	const float g2_31 = g31*g11 + g32*g21 + g33*g31;
+	const float g2_32 = g31*g12 + g32*g22 + g33*g32;
+	const float g2_33 = g31*g13 + g32*g23 + g33*g33;
 	
-	const float Sd_mag = pow(Sd2, 1.5f);
-	const float S_mag = pow(S2, 2.5f);
-	const float den = S_mag + Sd_mag;
+	// Trace of g^2
+	const float tr_g2 = g2_11 + g2_22 + g2_33;
 	
-	*nu_t = (den > 1E-8f) ? sq(Cw*Delta) * Sd_mag / den : 0.0f;
+	// Sd^d = 0.5*(g^2 + (g^2)^T) - (1/3)*I*tr(g^2)
+	const float Sd11 = g2_11 - tr_g2/3.0f;
+	const float Sd22 = g2_22 - tr_g2/3.0f;
+	const float Sd33 = g2_33 - tr_g2/3.0f;
+	const float Sd12 = 0.5f*(g2_12 + g2_21);
+	const float Sd13 = 0.5f*(g2_13 + g2_31);
+	const float Sd23 = 0.5f*(g2_23 + g2_32);
+	
+	// Sd_ij*Sd_ij contraction
+	const float Sd2 = Sd11*Sd11 + Sd22*Sd22 + Sd33*Sd33 + 2.0f*(Sd12*Sd12 + Sd13*Sd13 + Sd23*Sd23);
+	
+	// WALE formula: nu_t = (Cw*Delta)^2 * (Sd2^1.5) / (S2^2.5 + Sd2^1.25 + epsilon)
+	const float Sd_pow = pow(Sd2, 1.5f);
+	const float S_pow = pow(S2, 2.5f);
+	const float Sd_pow2 = pow(Sd2, 1.25f);
+	
+	*nu_t = (S_pow + Sd_pow2 > 1E-12f) ? sq(Cw*Delta) * Sd_pow / (S_pow + Sd_pow2) : 0.0f;
 }
 
 )+R(float solve_spalding_newton(float u_tan, float y) { // Newton-Raphson solver for Spalding's Law
-	float x = u_tan * 0.41f / log(1.0f + 9.0f*y); // initial guess for u_tau, then x becomes u_plus
-	const float kappa = 0.41f;
-	const float E_const = 9.8f;
-	// Calculate viscosity from def_w
 	const float nu = (1.0f/def_w - 0.5f)/3.0f;
+	const float Rey = u_tan * y / nu;  // Target y+ = u*y/nu (local Reynolds number)
 	
-	for(int i=0; i<10; i++) { // Newton-Raphson iterations
-		const float u_plus = x;
-		const float f = u_plus + exp(-kappa*E_const)*(exp(kappa*u_plus) - 1.0f - kappa*u_plus - 0.5f*sq(kappa*u_plus) - 1.0f/6.0f*cb(kappa*u_plus)) - u_tan*y/nu;
-		const float df = 1.0f + exp(-kappa*E_const)*(exp(kappa*u_plus)*kappa - kappa - kappa*kappa*u_plus - 0.5f*kappa*sq(kappa*u_plus));
+	if(Rey < 0.1f) return sqrt(nu * u_tan / (y + 1E-9f));  // Viscous sublayer: u+ ≈ y+, so u_tau = sqrt(nu*u_tan/y)
+	
+	const float kappa = 0.41f;
+	const float B = 5.2f;
+	
+	// Initial guess based on regime
+	float u_plus = (Rey < 11.5f) ? sqrt(Rey) : (1.0f/kappa)*log(Rey) + B;
+	
+	for(int i=0; i<6; i++) {
+		const float ku = kappa * u_plus;
+		const float eku = exp(ku);
+		const float ekB = exp(-kappa*B);
 		
-		const float dx = f / (df + 1E-9f);
-		x -= dx;
-		if(fabs(dx) < 1E-5f) break;
+		// f(u+) = u+ + e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6] - Rey
+		const float f = u_plus + ekB*(eku - 1.0f - ku - 0.5f*ku*ku - ku*ku*ku/6.0f) - Rey;
+		
+		// f'(u+) = 1 + k*e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2]
+		const float df = 1.0f + kappa*ekB*(eku - 1.0f - ku - 0.5f*ku*ku);
+		
+		u_plus -= f / (df + 1E-9f);
+		if(fabs(f) < 1E-6f) break;
 	}
-	return fabs(x * nu / y); // return u_tau = u_plus * nu / y
+	
+	return fmax(u_plus * nu / (y + 1E-9f), 1E-9f);  // u_tau = u+ * nu / y
 }
 
 
@@ -1586,7 +1623,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 	// u_slip = u_tan - (u_tau^2 / nu) * y
 	// const float nu = def_nu; // Global laminar viscosity
     const float nu = (1.0f/def_w - 0.5f)/3.0f; // Calculate nu locally
-	const float slip_factor = 1.0f - (sq(u_tau) * y) / (u_tan_mag * nu);
+	const float slip_factor = fmax(0.0f, 1.0f - (sq(u_tau) * y) / (u_tan_mag * nu + 1E-9f));
 	
 	const float3 u_slip = u_tan_vec * slip_factor;
 	

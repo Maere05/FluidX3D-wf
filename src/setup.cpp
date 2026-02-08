@@ -1422,7 +1422,7 @@ void setup_ahmed_body() { // Ahmed body validation
 void setup_cylinder() { // Cylinder validation
 	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
 	const float Re = 25000.0f;
-	const float D = 64.0f; // Diameter in lattice units
+	const float D = 56.0f; // Diameter in lattice units
 	const float u = 0.05f; // reduced velocity
 	const float w=10.0f*D, l=20.0f*D, h=2.0f*D; // Domain size
 	const float nu = units.nu_from_Re(Re, D, u);
@@ -1465,7 +1465,8 @@ void setup_ski_jumper() { // Ski Jumper validation (Placeholder geometry)
 #ifndef BENCHMARK
 void main_setup() { 
     // Select validation case
-    setup_ahmed_body();
+    //setup_ahmed_body();
+	setup_cylinder();
     // setup_cylinder();
     // setup_ski_jumper(); // Placeholder geometry if STL missing
 }
