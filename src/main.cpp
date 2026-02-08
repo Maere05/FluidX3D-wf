@@ -144,6 +144,9 @@ void main_graphics() {
 #endif // GRAPHICS
 
 void main_physics() {
+
+	main_arguments.push_back("0");
+
 	info.print_logo();
 	main_setup(); // execute setup
 	running = false;
@@ -154,6 +157,7 @@ void main_physics() {
 int main(int argc, char* argv[]) {
 	info.allow_printing.lock();
 	main_arguments = get_main_arguments(argc, argv);
+	//main_arguments.push_back("0");
 	thread compute_thread(main_physics);
 	info.allow_printing.unlock();
 	do { // main console loop

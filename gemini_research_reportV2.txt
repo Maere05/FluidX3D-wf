@@ -1,0 +1,100 @@
+This technical dossier outlines the implementation of the Wall-Adapting Local Eddy-viscosity (WALE) model, a Newton-Raphson solver for Spalding's Law, and a slip-velocity boundary condition for a high Reynolds number fork of FluidX3D.
+1. WALE Turbulence Model for LBM
+
+The WALE model is superior to the standard Smagorinsky model for wall-bounded flows because the eddy viscosity νt​ naturally recovers O(y3) scaling near the wall and vanishes in pure shear flows.
+Mathematical Formulation
+
+The eddy viscosity is defined as:
+νt​=(Cw​Δ)2(Sˉij​Sˉij​)5/2+(Sijd​Sijd​)5/4(Sijd​Sijd​)3/2​
+
+where Cw​≈0.325 is the WALE constant and Δ is the lattice spacing.
+
+The traceless symmetric part of the square of the velocity gradient tensor, Sijd​, is given by:
+Sijd​=21​(gˉ​ik​gˉ​kj​+gˉ​jk​gˉ​ki​)−31​δij​gˉ​kk2​
+
+where gˉ​ij​=∂uˉi​/∂xj​ is the resolved velocity gradient tensor.
+GPU-Efficient Computation
+
+In LBM, the symmetric strain rate tensor Sˉij​=21​(gˉ​ij​+gˉ​ji​) can be computed locally from the non-equilibrium distribution functions fineq​=fi​−fieq​:
+Sˉij​=−2ρτΔt3​k∑​eki​ekj​fkneq​
+
+To compute the full tensor gˉ​ij​, use central differences of the macroscopic velocity from nearest neighbors to obtain the antisymmetric rotation tensor Ωˉij​=21​(gˉ​ij​−gˉ​ji​). Then, gˉ​ij​=Sˉij​+Ωˉij​.
+
+OpenCL Pseudo-code Strategy:
+C
+
+// Local: Get S_ij from f_neq
+float S[1][1] = compute_strain_from_fneq(f, f_eq, rho, tau);
+
+// Neighbors: Get du_i/dx_j via central difference
+float3 u_px = read_u(n_px); float3 u_mx = read_u(n_mx);
+float g[1][1];
+g = (u_px.x - u_mx.x) * 0.5f; // and so on for all 9 components
+
+// Compute S_ij^d
+float Sd[1][1];
+// Sd = 0.5 * (g*g + (g*g)^T) - (1/3)*I*tr(g*g)
+float Sd_sq_sum = compute_Sd_contraction(g); 
+float S_sq_sum = compute_S_contraction(S);
+
+float nu_t = pown(Cw * delta, 2) * (pow(Sd_sq_sum, 1.5f) / 
+             (pow(S_sq_sum, 2.5f) + pow(Sd_sq_sum, 1.25f) + 1e-9f));
+
+2. Newton-Raphson Solver for Spalding's Law
+
+To avoid resolving the viscous sublayer at Re=106, we solve for the friction velocity uτ​ such that the wall distance y and tangential velocity utan​ satisfy Spalding's Law.
+Spalding's Law Formulation
+
+The equation to solve is F(u+)=ytarget+​−f(u+)=0, where ytarget+​=νuy​ is the local Reynolds number Rey​ (since u+y+=uτ​u​νuτ​y​=νuy​). $$y^+ = f(u^+) = u^+ + e^{-\kappa B} \left[ e^{\kappa u^+} - 1 - \kappa u^+ - \frac{(\kappa u^+)^2}{2} - \frac{(\kappa u^+)^3}{6} - \frac{(\kappa u^+)^4}{24} \right]$$The derivative f′(u+) for the Newton step is:
+f′(u+)=1+κe−κB[eκu+−1−κu+−2(κu+)2​−6(κu+)3​]
+Convergence Strategy for GPU
+
+    Initial Guess: For Rey​<11.5, use u0+​=Rey​​. For Rey​≥11.5, use the log-law inverse: u0+​=κ1​ln(Rey​)+B. This ensures convergence in 2-4 iterations.
+
+    Singularity Handling: If utan​<10−7, bypass the solver and set uτ​=0. This prevents division by zero in the Newton step.
+
+3. Slip-Velocity Bounce-Back Formulation
+
+The wall shear stress τw​=ρuτ2​ is enforced by imposing a slip velocity uslip​ at the wall node within a modified bounce-back scheme.
+Velocity Relation
+
+For a node located at distance y from the wall, the slip velocity uslip​ is derived by linearizing the velocity profile near the wall:
+\tau_w = \rho (\nu + \nu_t) \frac{|\vec{u}_{fluid} - \vec{u}_{slip}|}{y}$$Solving for $\vec{u}_{slip}$ in vector form:$$\vec{u}_{slip} = \vec{u}_{fluid} - \frac{u_\tau^2 y}{\nu + \nu_t} \vec{t}
+
+where t=ufluid​/∣ufluid​∣ is the tangential unit vector.
+Integration with D3Q19 Bounce-Back
+
+FluidX3D uses mid-grid bounce-back. For populations fi​ streaming toward the wall, the returned population fiˉ​ is modified by the slip velocity:
+fiˉ​=fi∗​−2wi​ρcs2​ei​⋅uslip​​
+
+where cs2​=1/3 and wi​ are lattice weights. This effectively treats the wall as a moving boundary with velocity uslip​, enforcing the target shear stress τw​.
+4. Geometric Pre-processing
+Distance to Nearest Solid (3D Distance Transform)
+
+The Jump Flooding Algorithm (JFA) is the most efficient method for generating a 3D Signed Distance Field (SDF) on GPUs.
+
+    Seed: Initialize voxels: SDF=0 for solids, SDF=∞ for fluid.
+
+    Passes: Run log2​(N) passes (where N is grid dimension) with step sizes k=N/2,N/4,…,1.
+
+    Kernel: Each voxel samples its 26 neighbors at distance k and updates its SDF to the minimum distance found.
+
+Surface Normal Estimation
+
+Estimating a smooth normal from a voxelized "staircase" mask is critical for calculating utan​.
+
+    Method: A Sobel operator (3D gradient filter) applied to the binary solid mask is highly effective.
+
+    Algorithm:
+
+        Apply a 3×3×3 Sobel-Feldman kernel to the binary occupancy grid O(x,y,z) (1 for solid, 0 for fluid).
+
+        The resulting vector G=(∇x​O,∇y​O,∇z​O) points toward the solid interior.
+
+        The approximate surface normal is n=−G/∣G∣.
+
+    Refinement: Applying a Gaussian box filter to the mask before the Sobel operator further smooths the normals, reducing artificial drag from stairstepping.
+
+Summary of Feasibility
+
+Implementing these methods in an OpenCL fork is highly feasible. WALE and NR-Spalding are local operations that preserve FluidX3D's memory-bandwidth-bound performance profile. The JFA and Sobel pre-processing steps are one-time costs during initialization or geometry updates, ensuring that Re=106 simulations remain computationally tractable on a single high-end GPU.

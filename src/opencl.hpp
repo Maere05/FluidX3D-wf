@@ -185,7 +185,7 @@ struct Device_Info {
 		} else if(contains(to_lower(vendor), "arm")) { // ARM
 			cores_per_cu = is_gpu ? 8.0f : 1.0f; // ARM GPUs usually have 8 cores/CU, ARM CPUs have 1 core/CU
 			uses_ram = false; // CL_MEM_USE_HOST_PTR is broken on ARM iGPUs, so disable zero-copy there
-			patch_legacy_gpu_fma = true; // enable for all ARM GPUs
+			patch_legacy_gpu_fma = false; // enable for all ARM GPUs
 		}
 		cores = to_uint((float)compute_units*cores_per_cu); // for CPUs, compute_units is the number of threads (twice the number of cores with hyperthreading)
 		tflops = 1E-6f*(float)cores*(float)ipc*(float)clock_frequency; // estimated device floating point performance in TeraFLOPs/s

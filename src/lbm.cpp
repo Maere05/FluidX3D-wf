@@ -128,6 +128,13 @@ void LBM_Domain::allocate(Device& device) {
 	rho = Memory<float>(device, N, 1u, true, true, 1.0f);
 	u = Memory<float>(device, N, 3u);
 	flags = Memory<uchar>(device, N);
+#ifdef WALL_FUNCTION
+	wall_distance = Memory<float>(device, N);
+	wall_normal = Memory<float>(device, N, 3u);
+	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags);
+	kernel_wall_normal = Kernel(device, N, "wall_normal", wall_distance, flags, wall_normal);
+#endif // WALL_FUNCTION
+
 	kernel_initialize = Kernel(device, N, "initialize", fi, rho, u, flags);
 	kernel_stream_collide = Kernel(device, N, "stream_collide", fi, rho, u, flags, t, fx, fy, fz);
 #ifdef WALL_FUNCTION
@@ -172,12 +179,7 @@ void LBM_Domain::allocate(Device& device) {
 	kernel_update_fields.add_parameters(gi, T);
 #endif // TEMPERATURE
 
-#ifdef WALL_FUNCTION
-	wall_distance = Memory<float>(device, N);
-	wall_normal = Memory<float>(device, N, 3u);
-	kernel_jump_flooding = Kernel(device, N, "jump_flooding", wall_distance, flags);
-	kernel_wall_normal = Kernel(device, N, "wall_normal", wall_distance, flags, wall_normal);
-#endif // WALL_FUNCTION
+
 
 
 #ifdef PARTICLES
@@ -486,6 +488,14 @@ string LBM_Domain::device_defines() const { return
 #ifdef SUBGRID
 	"\n	#define SUBGRID"
 #endif // SUBGRID
+
+#ifdef WALL_FUNCTION
+	"\n	#define WALL_FUNCTION"
+#endif // WALL_FUNCTION
+
+#ifdef TURBULENCE_MODEL_WALE
+	"\n	#define TURBULENCE_MODEL_WALE"
+#endif // TURBULENCE_MODEL_WALE
 
 #ifdef PARTICLES
 	"\n	#define PARTICLES"
