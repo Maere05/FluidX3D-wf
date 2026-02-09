@@ -2,7 +2,7 @@
 
 #define WORKGROUP_SIZE 64 // needs to be 64 to fully use AMD GPUs
 //#define PTX
-//#define LOG
+#define LOG
 
 // https://github.com/KhronosGroup/OpenCL-Headers
 // https://github.com/KhronosGroup/OpenCL-CLHPP
@@ -277,6 +277,10 @@ inline Device_Info select_device_with_id(const uint id, const vector<Device_Info
 	}
 }
 
+inline void check_opencl_error(const int error, const string& name) {
+	if(error!=0) print_error(name+" failed with error code "+to_string(error)+"!");
+}
+
 class Device {
 private:
 	cl::Program cl_program;
@@ -327,7 +331,7 @@ public:
 	}
 	inline Device() {} // default constructor
 	inline void barrier(const vector<Event>* event_waitlist=nullptr, Event* event_returned=nullptr) { cl_queue.enqueueBarrierWithWaitList(event_waitlist, event_returned); }
-	inline void finish_queue() { cl_queue.finish(); }
+	inline void finish_queue() { check_opencl_error(cl_queue.finish(), "Device::finish_queue()"); }
 	inline cl::Context get_cl_context() const { return info.cl_context; }
 	inline cl::Program get_cl_program() const { return cl_program; }
 	inline cl::CommandQueue get_cl_queue() const { return cl_queue; }
@@ -604,7 +608,7 @@ public:
 	inline void enqueue_write_to_device(const vector<Event>* event_waitlist=nullptr, Event* event_returned=nullptr) { write_to_device(false, event_waitlist, event_returned); }
 	inline void enqueue_read_from_device(const ulong offset, const ulong length, const vector<Event>* event_waitlist=nullptr, Event* event_returned=nullptr) { read_from_device(offset, length, false, event_waitlist, event_returned); }
 	inline void enqueue_write_to_device(const ulong offset, const ulong length, const vector<Event>* event_waitlist=nullptr, Event* event_returned=nullptr) { write_to_device(offset, length, false, event_waitlist, event_returned); }
-	inline void finish_queue() { cl_queue.finish(); }
+	inline void finish_queue() { check_opencl_error(cl_queue.finish(), "Memory::finish_queue()"); }
 	inline const cl::Buffer& get_cl_buffer() const { return device_buffer; }
 };
 
@@ -683,7 +687,7 @@ public:
 		return run(t, event_waitlist, event_returned);
 	}
 	inline Kernel& finish_queue() {
-		cl_queue.finish();
+		check_opencl_error(cl_queue.finish(), "Kernel::finish_queue()");
 		return *this;
 	}
 };

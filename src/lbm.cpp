@@ -195,9 +195,11 @@ void LBM_Domain::allocate(Device& device) {
 
 void LBM_Domain::enqueue_initialize() { // call kernel_initialize
 	kernel_initialize.enqueue_run();
+	check_opencl_error(device.get_cl_queue().finish(), "Kernel Initialize");
 }
 void LBM_Domain::enqueue_stream_collide() { // call kernel_stream_collide to perform one LBM time step
 	kernel_stream_collide.set_parameters(4u, t, fx, fy, fz).enqueue_run();
+	check_opencl_error(device.get_cl_queue().finish(), "Kernel Stream Collide");
 }
 void LBM_Domain::enqueue_update_fields() { // update fields (rho, u, T) manually
 #ifndef UPDATE_FIELDS
@@ -273,12 +275,20 @@ void LBM_Domain::enqueue_integrate_particles(const uint time_step_multiplicator)
 #ifdef WALL_FUNCTION
 void LBM_Domain::calculate_wall_geometry() {
 	const uint JFA_iter = (uint)ceil(log2((float)max(max(Nx, Ny), Nz)));
+	print_info("Debug: JFA_iter = " + to_string(JFA_iter));
 	kernel_jump_flooding.set_parameters(2u, (uint)0u).enqueue_run(); // initialize local distance
+	device.finish_queue();
+	print_info("Debug: JFA init done");
 	for(uint k=0u; k<JFA_iter; k++) {
 		const uint s = 1u<<(JFA_iter-1u-k);
+		print_info("Debug: JFA step s=" + to_string(s));
 		kernel_jump_flooding.set_parameters(2u, s).enqueue_run();
+		device.finish_queue();
 	}
+	print_info("Debug: JFA loop done");
 	kernel_wall_normal.enqueue_run();
+	device.finish_queue();
+	print_info("Debug: wall normal done");
 }
 #endif // WALL_FUNCTION
 
@@ -564,6 +574,7 @@ bool LBM_Domain::Graphics::enqueue_draw_frame(const int visualization_modes, con
 	t_last_rendered_frame = lbm->get_t();
 	if(camera_update) camera_parameters.enqueue_write_to_device(); // camera_parameters PCIe transfer and kernel_clear execution can happen simulataneously
 	kernel_clear.enqueue_run();
+	check_opencl_error(lbm->get_device().get_cl_queue().finish(), "Kernel Clear");
 	const int sx=slice_x-lbm->Ox, sy=slice_y-lbm->Oy, sz=slice_z-lbm->Oz; // subtract domain offsets
 #ifdef SURFACE
 	if((visualization_modes&VIS_PHI_RAYTRACE)&&lbm->get_D()==1u) kernel_graphics_raytrace_phi.enqueue_run(); // disable raytracing for multi-GPU (domain decomposition rendering doesn't work for raytracing)
@@ -580,6 +591,7 @@ bool LBM_Domain::Graphics::enqueue_draw_frame(const int visualization_modes, con
 		switch(slice_mode) { // 0 (no slice), 1 (x), 2 (y), 3 (z), 4 (xz), 5 (xyz), 6 (yz), 7 (xy)
 			case 0: // no slice
 				kernel_graphics_field.set_parameters(3u, field_mode).enqueue_run();
+				check_opencl_error(lbm->get_device().get_cl_queue().finish(), "Kernel Graphics Field");
 				break;
 			case 1: case 2: case 3: // x/y/z
 				kernel_graphics_field_slice.set_ranges(lbm->get_area((uint)clamp(slice_mode-1, 0, 2))).set_parameters(3u, field_mode, slice_mode, sx, sy, sz).enqueue_run();
@@ -602,6 +614,7 @@ bool LBM_Domain::Graphics::enqueue_draw_frame(const int visualization_modes, con
 				kernel_graphics_field_slice.set_ranges(lbm->get_area(1u)).set_parameters(3u, field_mode, 1u+1u, sx, sy, sz).enqueue_run();
 				break;
 		}
+		check_opencl_error(lbm->get_device().get_cl_queue().finish(), "Kernel Graphics Field Slice");
 	}
 	bitmap.enqueue_read_from_device();
 	if(lbm->get_D()>1u) zbuffer.enqueue_read_from_device();
@@ -898,8 +911,10 @@ void LBM::initialize() { // write all data fields to device and call kernel_init
 #endif // BENCHMARK
 
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->rho.enqueue_write_to_device();
+	print_info("Debug: rho written");
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->u.enqueue_write_to_device();
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->flags.enqueue_write_to_device();
+	print_info("Debug: flags written");
 #ifdef FORCE_FIELD
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->F.enqueue_write_to_device();
 	communicate_F();
@@ -917,33 +932,44 @@ void LBM::initialize() { // write all data fields to device and call kernel_init
 
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->increment_time_step(); // the communicate calls at initialization need an odd time step
 	communicate_rho_u_flags();
+	print_info("Debug: communicate_rho_u_flags 1 done");
 #ifdef SURFACE
 	communicate_phi_massex_flags();
 #endif // SURFACE
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->enqueue_initialize(); // odd time step is baked-in the kernel
+	print_info("Debug: enqueue_initialize done");
 	communicate_rho_u_flags();
+	print_info("Debug: communicate_rho_u_flags 2 done");
 #ifdef SURFACE
 	communicate_phi_massex_flags();
 #endif // SURFACE
 	communicate_fi(); // time step must be odd here
+	print_info("Debug: communicate_fi done");
 #ifdef TEMPERATURE
 	communicate_T(); // T halo data is required for field_slice rendering
 	communicate_gi(); // time step must be odd here
 #endif // TEMPERATURE
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->finish_queue();
+	print_info("Debug: finish_queue done");
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->reset_time_step(); // set time step to 0 again
 #ifdef WALL_FUNCTION
+	print_info("Debug: calculating wall geometry...");
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->calculate_wall_geometry();
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->finish_queue();
+	print_info("Debug: wall geometry calculated");
 #endif // WALL_FUNCTION
 	initialized = true;
+	print_info("Debug: initialization complete");
 }
 
 void LBM::do_time_step() { // call kernel_stream_collide to perform one LBM time step
+	static bool first_run = true;
+	if (first_run) print_info("Debug: starting do_time_step");
 #ifdef SURFACE
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->enqueue_surface_0();
 #endif // SURFACE
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->enqueue_stream_collide(); // run LBM stream_collide kernel after domain communication
+	if (first_run) print_info("Debug: enqueue_stream_collide done");
 #if defined(SURFACE) || defined(GRAPHICS)
 	communicate_rho_u_flags(); // rho/u/flags halo data is required for SURFACE extension, and u halo data is required for Q-criterion rendering
 #endif // SURFACE || GRAPHICS
@@ -967,6 +993,10 @@ void LBM::do_time_step() { // call kernel_stream_collide to perform one LBM time
 	communicate_particles(); // communicate_F() is not required in do_time_step()
 #endif // PARTICLES
 	if(get_D()==1u) for(uint d=0u; d<get_D(); d++) lbm_domain[d]->finish_queue(); // this additional domain synchronization barrier is only required in single-GPU, as communication calls already provide all necessary synchronization barriers in multi-GPU
+	if (first_run) {
+		print_info("Debug: do_time_step finished");
+		first_run = false;
+	}
 	for(uint d=0u; d<get_D(); d++) lbm_domain[d]->increment_time_step();
 }
 

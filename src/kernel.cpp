@@ -1399,9 +1399,9 @@ string opencl_c_container() { return R( // ########################## begin of O
 	}
 	const uint3 xyz = coordinates(n);
 	const int x=(int)xyz.x, y=(int)xyz.y, z=(int)xyz.z;
-	const float dx = 0.5f*(wall_distance[index((uint3)((uint)(x+1), (uint)y, (uint)z))] - wall_distance[index((uint3)((uint)(x-1), (uint)y, (uint)z))]);
-	const float dy = 0.5f*(wall_distance[index((uint3)((uint)x, (uint)(y+1), (uint)z))] - wall_distance[index((uint3)((uint)x, (uint)(y-1), (uint)z))]);
-	const float dz = 0.5f*(wall_distance[index((uint3)((uint)x, (uint)y, (uint)(z+1)))] - wall_distance[index((uint3)((uint)x, (uint)y, (uint)(z-1)))]);
+	const float dx = 0.5f*(wall_distance[index((uint3)((uint)min(x+1,(int)def_Nx-1), (uint)y, (uint)z))] - wall_distance[index((uint3)((uint)max(x-1,0), (uint)y, (uint)z))]);
+	const float dy = 0.5f*(wall_distance[index((uint3)((uint)x, (uint)min(y+1,(int)def_Ny-1), (uint)z))] - wall_distance[index((uint3)((uint)x, (uint)max(y-1,0), (uint)z))]);
+	const float dz = 0.5f*(wall_distance[index((uint3)((uint)x, (uint)y, (uint)min(z+1,(int)def_Nz-1)))] - wall_distance[index((uint3)((uint)x, (uint)y, (uint)max(z-1,0)))]);
 	const float len = rsqrt(dx*dx+dy*dy+dz*dz+1E-9f);
 	wall_normal[n] = dx*len;
 	wall_normal[def_N+(ulong)n] = dy*len;
