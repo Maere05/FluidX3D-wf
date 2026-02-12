@@ -23,8 +23,8 @@
 //#define TEMPERATURE // enables temperature extension; set fixed-temperature cells with TYPE_T (similar to EQUILIBRIUM_BOUNDARIES); allocates an extra 32 (FP32) or 18 (FP16) Bytes/cell
 //#define PARTICLES // enables particles with immersed-boundary method (for 2-way coupling also activate VOLUME_FORCE and FORCE_FIELD; only supported in single-GPU)
 //#define MOVING_BOUNDARIES // enables moving solids: set solid cells to TYPE_S and set their velocity u unequal to zero
-#define WALL_FUNCTION // wall functions for high Reynolds number flows
-#define TURBULENCE_MODEL_WALE // WALE turbulence model (mutually exclusive with SUBGRID)
+//#define WALL_FUNCTION // wall functions for high Reynolds number flows
+//#define TURBULENCE_MODEL_WALE // WALE turbulence model (mutually exclusive with SUBGRID)
 //#define SUBGRID // Smagorinsky-Lilly SGS turbulence model
 
 

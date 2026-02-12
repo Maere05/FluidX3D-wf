@@ -1422,7 +1422,7 @@ void setup_ahmed_body() { // Ahmed body validation
 void setup_cylinder() { // Cylinder validation
 	// ################################################################## define simulation box size, viscosity and volume force ###################################################################
 	const float Re = 25000.0f;
-	const float D = 56.0f; // Diameter in lattice units
+	const float D = 76.0f; // Diameter in lattice units
 	const float u = 0.05f; // reduced velocity
 	const float w=10.0f*D, l=20.0f*D, h=2.0f*D; // Domain size
 	const float nu = units.nu_from_Re(Re, D, u);
@@ -1430,7 +1430,7 @@ void setup_cylinder() { // Cylinder validation
 	// ###################################################################################### define geometry ######################################################################################
 	const uint Nx=lbm.get_Nx(), Ny=lbm.get_Ny(), Nz=lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x=0u, y=0u, z=0u; lbm.coordinates(n, x, y, z);
 		lbm.u.y[n] = u; // Flow in Y direction
-		if(cylinder(x, y, z, float3(lbm.center().x, 4.0f*D, lbm.center().z), float3(Nx, 0u, 0u), 0.5f*D)) lbm.flags[n] = TYPE_S;
+		if(cylinder(x, y, z, float3(lbm.center().x, 4.0f*D, lbm.center().z), float3(0u, 0u, Nz), 0.5f*D)) lbm.flags[n] = TYPE_S;
 		if(x==0u||x==Nx-1u||z==0u||z==Nz-1u) lbm.flags[n] = TYPE_S; // Side walls
         if(y==0u||y==Ny-1u) lbm.flags[n] = TYPE_E; // Inflow/Outflow
 	}); 
@@ -1462,12 +1462,201 @@ void setup_ski_jumper() { // Ski Jumper validation (Placeholder geometry)
 	lbm.run();
 }
 
+void run_single_simulation(const std::filesystem::path& stl_path);
+
 #ifndef BENCHMARK
 void main_setup() { 
     // Select validation case
     //setup_ahmed_body();
 	setup_cylinder();
+	//run_single_simulation(get_exe_path() + "../stl/jumper-aoa30.stl");
     // setup_cylinder();
     // setup_ski_jumper(); // Placeholder geometry if STL missing
 }
 #endif
+
+
+
+
+
+
+struct FluidSimInfo {
+
+	float3 posBounds = { 1.5f, 1.0f, 1.5f };
+	float3 negBounds = { -1.5f, -2.0f, -1.5f };
+	float3 u = { 0.1f, 0.0f, 0.0f };
+
+	float siAirspeed = 25.0f; //m/s
+	float memory = 20000;//in MB
+
+	uint16_t initTimestep = 5000;
+	uint16_t loop = 10;
+	uint16_t loopSteps = 100;
+
+	// Enum for Readout Type (0: None, 1: Forces, 2: Torques, 3: Both)
+
+	char readoutType = 1; // 0: None, 1: Forces, 2: Torques, 3: Both
+	char isEquilibriumBoundary = 0b11001100; // 0: x+, 1: x-, 2: y+, 3: y-, 4: z+, 5: z-, nothing....
+
+	char name[20] = "myRigID";
+	char filler[12] = {};
+
+	char* dumpHeader() {
+		char* data = new char[80];
+		memcpy(data, &posBounds, 12);
+		memcpy(data + 12, &negBounds, 12);
+		memcpy(data + 24, &u, 12);
+		memcpy(data + 36, &siAirspeed, 4);
+		memcpy(data + 40, &memory, 4);
+		memcpy(data + 44, &initTimestep, 2);
+		memcpy(data + 46, &loop, 2);
+		memcpy(data + 48, &loopSteps, 2);
+		memcpy(data + 50, &readoutType, 1);
+		memcpy(data + 51, &isEquilibriumBoundary, 1);
+		memcpy(data + 52, &name, 20);
+
+		std::memset(filler, 0xff, sizeof(filler));
+		memcpy(data + 72, &filler, 8);
+
+		return data;
+	}
+
+	void load(char* data) {
+		memcpy(&posBounds, data, 12);
+		memcpy(&negBounds, data + 12, 12);
+		memcpy(&u, data + 24, 12);
+		memcpy(&siAirspeed, data + 36, 4);
+		memcpy(&memory, data + 40, 4);
+		memcpy(&initTimestep, data + 44, 2);
+		memcpy(&loop, data + 46, 2);
+		memcpy(&loopSteps, data + 48, 2);
+		memcpy(&readoutType, data + 50, 1);
+		memcpy(&isEquilibriumBoundary, data + 51, 1);
+		memcpy(&name, data + 52, 20);
+		memcpy(&filler, data + 72, 8);
+	}
+
+	void read(string filepath) {
+		std::ifstream file(filepath);
+		char header[80];
+		file.read(header, 80);
+		file.close();
+		load(header);
+	}
+};
+
+
+void run_single_simulation(const std::filesystem::path& stl_path) {
+	print_info("Running simulation for: " + stl_path.string());
+
+	FluidSimInfo fs;
+	fs.read(stl_path.string());
+
+	//DEBUG VALUES
+	fs.memory = 2000; // in MB
+	fs.loop = 10; // number of loops
+	fs.loopSteps = 50; // number of steps per loop
+	fs.initTimestep = 1500; // initial timestep in steps
+
+
+	// Unit declarations
+	float3 size;
+	size.x = fs.posBounds.x - fs.negBounds.x;
+	size.y = fs.posBounds.z - fs.negBounds.z; // y and z are swapped
+	size.z = fs.posBounds.y - fs.negBounds.y;
+
+	// LBM, Mesh, and Units setup (using your existing classes)
+	Units units;
+	const uint3 L = resolution(size, fs.memory);
+	const float siLength = (fs.posBounds.z - fs.negBounds.z) * 0.01f;
+	const float siAirspeed = fs.siAirspeed;
+	const float siRho = 1.225f;
+	const float siNu = 1.48E-5f;
+
+	//Multi GPU
+	//main_arguments.push_back("1");
+	main_arguments.push_back("0");
+
+	// Set up the units for the simulation
+	units.set_m_kg_s(L.y, 0.1f, 1.0f, siLength, siAirspeed, siRho);
+
+	// The arguments for GPU division can be passed via main_arguments if needed
+	LBM lbm(L, 1u, 1u, 1u, units.nu(siNu));
+	//LBM lbm()
+
+	const float3 center = lbm.center();
+	const float3x3 rotation = float3x3(float3(1, 0, 0), radians(90.0f));
+	Mesh* body = read_stl(stl_path.string(), { (float)L.x, (float)L.y, (float)L.z }, center, rotation, 0.0);
+	lbm.voxelize_mesh_on_device(body);
+
+	// Boundary conditions
+	const uint Nx = lbm.get_Nx(), Ny = lbm.get_Ny(), Nz = lbm.get_Nz(); parallel_for(lbm.get_N(), [&](ulong n) { uint x = 0u, y = 0u, z = 0u; lbm.coordinates(n, x, y, z);
+	if (lbm.flags[n] != TYPE_S) lbm.u.y[n] = 0.1f;
+	if (x == 0u || x == Nx - 1u || y == 0u || y == Ny - 1u || z == Nz - 1u) lbm.flags[n] = TYPE_E; });
+
+	// Run simulation
+	lbm.run(fs.initTimestep);
+
+	std::vector<float3> forces;
+	//forces.reserve(fs.loop); // Reserve space for forces
+	std::vector<float3> torques;
+
+	for (int i = 0; i < fs.loop; i++)
+	{
+		lbm.run(fs.loopSteps);
+		// Force readout
+		float3 force = { 0.0f, 0.0f, 0.0f };
+		float3 torque = { 0.0f, 0.0f, 0.0f };
+
+		const float3 lbm_force = lbm.object_force(TYPE_S); // force on object
+		const float3 lbm_torque = lbm.object_torque(float3(0, 0, 0), TYPE_S); // torque on object around lbm_com rotation point
+
+		force.x = units.si_F(lbm_force.x); // convert to SI units
+		force.y = units.si_F(lbm_force.y);
+		force.z = units.si_F(lbm_force.z);
+
+		torque.x = units.si_M(lbm_torque.x); // convert to SI units
+		torque.y = units.si_M(lbm_torque.y);
+		torque.z = units.si_M(lbm_torque.z);
+
+		print_info("| Loop #" + std::to_string(i) + " / " + std::to_string(fs.loop) + " | Force = " + std::to_string(force.x) + " , " + std::to_string(force.y) + " , " + std::to_string(force.z));
+		// y is drag, z is lift, x is side force
+
+		forces.push_back(force);
+		torques.push_back(torque);
+	}
+
+	// save .vtk file for visualization
+	//std::filesystem::path vtk_path = stl_path.stem();
+	//print_info("Writing VTK files to: " + vtk_path.string());
+	//lbm.rho.write_device_to_vtk(vtk_path.string() + "_rho.vtk", true);
+	//lbm.u.write_device_to_vtk(vtk_path.string() + "_U.vtk", true);
+	//lbm.F.write_device_to_vtk(vtk_path.string() + "_F.vtk", true);
+
+	// Write results to the .dat file in the same directory
+	std::filesystem::path dat_path = stl_path;
+	dat_path.replace_extension(".dat");
+
+	std::ofstream file(dat_path, std::ios::out | std::ios::binary);
+	char* header_data = fs.dumpHeader();
+	file.write(header_data, 80);
+	delete[] header_data;
+
+	for (int i = 0; i < fs.loop; i++)
+	{
+		file.write((char*)&forces[i], sizeof(float3));
+		file.write((char*)&torques[i], sizeof(float3));
+	}
+	file.close();
+
+	print_info("Data written to: " + dat_path.string());
+
+	// ---- FIX: Clean up the allocated mesh memory ----
+	print_info("Cleaning up mesh for: " + stl_path.filename().string());
+	delete body;
+	body = nullptr; // Good practice to prevent dangling pointers
+
+	main_arguments.clear(); // Clear the main arguments for the next simulation
+
+	print_info("Finished simulation for: " + stl_path.string());
+}

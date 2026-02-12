@@ -1,0 +1,83 @@
+==============================================================================
+Plan 2: Moderate WALE Wall-Function Issues
+==============================================================================
+
+These are lower-priority improvements that refine accuracy and robustness
+but are NOT the cause of simulation blowup. Address these after Plan 1 is
+verified to stabilize the simulation.
+
+------------------------------------------------------------------------------
+Issue #4 — Missing (kappa*u+)^4/24 term in Spalding's law
+------------------------------------------------------------------------------
+File: src/kernel.cpp, function solve_spalding_newton
+
+The Spalding law evaluation (line ~1592) omits the fourth-order term from the
+Taylor expansion. The reference formula is:
+
+  y+ = u+ + e^{-kB} [ e^{ku+} - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6 - (ku+)^4/24 ]
+
+Current code:
+  f = u_plus + ekB*(eku - 1.0f - ku - 0.5f*ku*ku - ku*ku*ku/6.0f) - Rey;
+
+Fix — add the missing term:
+  const float ku2 = ku*ku;
+  const float ku3 = ku2*ku;
+  const float ku4 = ku3*ku;
+  f = u_plus + ekB*(eku - 1.0f - ku - 0.5f*ku2 - ku3/6.0f - ku4/24.0f) - Rey;
+
+Impact: Improves convergence accuracy at high Re where ku+ can be large (~8-12).
+This ensures the Newton solver converges to the correct u+ value rather than a
+slightly shifted one.
+
+------------------------------------------------------------------------------
+Issue #5 — Missing (kappa*u+)^3/6 term in Spalding derivative
+------------------------------------------------------------------------------
+File: src/kernel.cpp, function solve_spalding_newton
+
+The derivative f'(u+) (line ~1595) is missing the third-order term. Reference:
+
+  f'(u+) = 1 + kappa * e^{-kB} * [ e^{ku+} - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6 ]
+
+Current code:
+  df = 1.0f + kappa*ekB*(eku - 1.0f - ku - 0.5f*ku*ku);
+
+Fix — add the missing term:
+  df = 1.0f + kappa*ekB*(eku - 1.0f - ku - 0.5f*ku*ku - ku*ku*ku/6.0f);
+
+Impact: Makes the Newton step more accurate, ensuring quadratic convergence
+rate is maintained even at high Reynolds numbers. Without this term the
+convergence degrades to superlinear.
+
+------------------------------------------------------------------------------
+Issue #6 — No near-wall distance threshold in apply_wall_function
+------------------------------------------------------------------------------
+File: src/kernel.cpp, function apply_wall_function
+
+Currently every fluid cell (not just near-wall cells) passes through the wall
+function logic. While cells far from walls have large wall_distance values
+(which should produce small corrections), this is wasteful and can introduce
+subtle numerical noise in the interior of the domain.
+
+Fix — add an early return for cells far from the wall:
+
+  const float y = wall_distance[n];
+  if(y > 10.0f) return;  // skip wall model for cells far from wall
+                          // 10 lattice units is a reasonable cutoff
+
+The cutoff distance should be chosen based on the expected y+ range where the
+wall model is active. For most LBM simulations, the wall model only needs to
+act on the first ~5-10 layers of cells next to solid boundaries.
+
+Impact: Reduces unnecessary computation in interior cells and eliminates any
+numerical noise from applying the wall model correction where it shouldn't act.
+Choosing 10 lattice units as threshold ensures we capture the entire log-law
+region while excluding bulk flow.
+
+==============================================================================
+Verification
+==============================================================================
+After implementing all three moderate fixes:
+1. Run the ski jumper simulation at RE ~ 1E6
+2. Compare drag/lift coefficients with and without the moderate fixes
+3. Check that Newton convergence improves (fewer iterations needed)
+4. Verify the wall model only activates near solid boundaries

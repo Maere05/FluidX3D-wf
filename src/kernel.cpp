@@ -1575,7 +1575,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 	const float nu = (1.0f/def_w - 0.5f)/3.0f;
 	const float Rey = u_tan * y / nu;  // Target y+ = u*y/nu (local Reynolds number)
 	
-	if(Rey < 0.1f) return sqrt(nu * u_tan / (y + 1E-9f));  // Viscous sublayer: u+ ≈ y+, so u_tau = sqrt(nu*u_tan/y)
+	if(Rey < 0.1f) return sqrt(fmax(nu * u_tan / (y + 1E-9f), 0.0f));  // Viscous sublayer: u+ ≈ y+, so u_tau = sqrt(nu*u_tan/y)
 	
 	const float kappa = 0.41f;
 	const float B = 5.2f;
@@ -1585,29 +1585,33 @@ string opencl_c_container() { return R( // ########################## begin of O
 	
 	for(int i=0; i<6; i++) {
 		const float ku = kappa * u_plus;
+		const float ku2 = ku*ku;
+		const float ku3 = ku2*ku;
+		const float ku4 = ku3*ku;
 		const float eku = exp(ku);
 		const float ekB = exp(-kappa*B);
 		
-		// f(u+) = u+ + e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6] - Rey
-		const float f = u_plus + ekB*(eku - 1.0f - ku - 0.5f*ku*ku - ku*ku*ku/6.0f) - Rey;
+		// f(u+) = u+ + e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6 - (ku+)^4/24] - Rey
+		const float f = u_plus + ekB*(eku - 1.0f - ku - 0.5f*ku2 - ku3/6.0f - ku4/24.0f) - Rey;
 		
-		// f'(u+) = 1 + k*e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2]
-		const float df = 1.0f + kappa*ekB*(eku - 1.0f - ku - 0.5f*ku*ku);
+		// f'(u+) = 1 + k*e^(-kB)[e^(ku+) - 1 - ku+ - (ku+)^2/2 - (ku+)^3/6]
+		const float df = 1.0f + kappa*ekB*(eku - 1.0f - ku - 0.5f*ku2 - ku3/6.0f);
 		
 		u_plus -= f / (df + 1E-9f);
 		if(fabs(f) < 1E-6f) break;
 	}
 	
-	return fmax(u_plus * nu / (y + 1E-9f), 1E-9f);  // u_tau = u+ * nu / y
+	return fmax(u_tan / (u_plus + 1E-9f), 1E-9f);  // u_tau = u_tan / u+
 }
 
 
-)+R(void apply_wall_function(const uxx n, float* fhn, const uxx* j, const global float* u, const global uchar* flags, const global float* wall_distance, const global float* wall_normal) { // Wall Function with Spalding's Law and Slip Velocity
+)+R(void apply_wall_function(const uxx n, float* fhn, const uxx* j, const global float* u, const global uchar* flags, const global float* wall_distance, const global float* wall_normal, const float nu_t) { // Wall Function with Spalding's Law and Slip Velocity
 	// Get local flow properties
 	const float3 vel = load3(n, u);
     const float3 nw = (float3)(wall_normal[n], wall_normal[def_N+(ulong)n], wall_normal[2ul*def_N+(ulong)n]);
     
 	const float y = wall_distance[n];
+	if(y > 10.0f) return; // skip wall model for cells far from wall
 	
 	// Tangential velocity
 	const float vn = dot(vel, nw);
@@ -1623,7 +1627,7 @@ string opencl_c_container() { return R( // ########################## begin of O
 	// u_slip = u_tan - (u_tau^2 / nu) * y
 	// const float nu = def_nu; // Global laminar viscosity
     const float nu = (1.0f/def_w - 0.5f)/3.0f; // Calculate nu locally
-	const float slip_factor = fmax(0.0f, 1.0f - (sq(u_tau) * y) / (u_tan_mag * nu + 1E-9f));
+	const float slip_factor = fmax(0.0f, 1.0f - (sq(u_tau) * y) / (u_tan_mag * (nu + nu_t) + 1E-9f));
 	
 	const float3 u_slip = u_tan_vec * slip_factor;
 	
@@ -1679,8 +1683,16 @@ string opencl_c_container() { return R( // ########################## begin of O
 	load_f(n, fhn, fi, j, t); // perform streaming (part 2)
 
 )
++R(
+	float nu_t = 0.0f;
+)
++"#ifdef TURBULENCE_MODEL_WALE"+R(
+	calculate_viscosity_WALE(n, u, 1.0f, &nu_t);
+)
++"#endif"+R(
+)
 +"#ifdef WALL_FUNCTION"+R(
-	apply_wall_function(n, fhn, j, u, flags, wall_distance, wall_normal);
+	apply_wall_function(n, fhn, j, u, flags, wall_distance, wall_normal, nu_t);
 )
 +"#endif"+R(
 
@@ -1810,7 +1822,6 @@ string opencl_c_container() { return R( // ########################## begin of O
 
 )
 +"#if defined(SUBGRID) || defined(TURBULENCE_MODEL_WALE)"+R(
-    float nu_t = 0.0f;
 )
 +"#ifdef SUBGRID"+R(
 	{ // Smagorinsky-Lilly subgrid turbulence model
@@ -1824,14 +1835,13 @@ string opencl_c_container() { return R( // ########################## begin of O
 			Hxz += cxi*czi*fneqi; Hyz += cyi*czi*fneqi; Hzz += czi*czi*fneqi;
 		}
 		const float Q = sq(Hxx)+sq(Hyy)+sq(Hzz)+2.0f*(sq(Hxy)+sq(Hxz)+sq(Hyz)); 
-        // viscosity contribution
-		nu_t = 0.16f * sqrt(Q) / rhon; // simplified form for structure, preserving original logic flow in different variables if needed
-        w = 2.0f/(tau0+sqrt(sq(tau0)+0.76421222f*sqrt(Q)/rhon));
+		nu_t = 0.16f * sqrt(Q) / rhon;
+		w = 2.0f/(tau0+sqrt(sq(tau0)+0.76421222f*sqrt(Q)/rhon));
 	} 
 )
 +"#elif defined(TURBULENCE_MODEL_WALE)"+R(
-    calculate_viscosity_WALE(n, u, rhon, &nu_t);
-    w = 1.0f / (1.0f/def_w + 3.0f*nu_t);
+	// nu_t already computed before wall function for proper coupling
+	w = 1.0f / (1.0f/def_w + 3.0f*nu_t);
 )
 +"#endif"+R(
 )
